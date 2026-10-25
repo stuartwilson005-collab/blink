@@ -12,4 +12,6 @@ jobs:
       - name: Generate project
         run: xcodegen generate
       - name: Build iOS simulator app
-        run: xcodebuild -project BlinkControl.xcodeproj -scheme BlinkControl -sdk iphonesimulator -configuration Debug CODE_SIGNING_ALLOWED=NO build
+        run: xcodebuild -project BlinkControl.xcodeproj -scheme BlinkControl -destination 'generic/platform=iOS Simulator' -configuration Debug CODE_SIGNING_ALLOWED=NO build
+      - name: Build Watch simulator app
+        run: xcodebuild -project BlinkControl.xcodeproj -scheme BlinkControlWatch -destination 'generic/platform=watchOS Simulator' -configuration Debug CODE_SIGNING_ALLOWED=NO build

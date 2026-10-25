@@ -15,12 +15,17 @@ enum SessionStore {
         let status = SecItemCopyMatching(query as CFDictionary, &result)
         if status == errSecItemNotFound { return nil }
         guard status == errSecSuccess, let data = result as? Data else { throw StoreError.failed(status) }
+        // Upgrade existing sessions so wrist controls can run after the phone locks.
+        // The user must unlock once after each restart; tokens never migrate devices.
+        let migration = SecItemUpdate(Self.query as CFDictionary,
+            [kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly] as CFDictionary)
+        guard migration == errSecSuccess else { throw StoreError.failed(migration) }
         return try JSONDecoder().decode(Credentials.self, from: data)
     }
     static func save(_ credentials: Credentials) throws {
         let data = try JSONEncoder().encode(credentials)
         let attributes: [String: Any] = [kSecValueData as String: data,
-            kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly]
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly]
         var status = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
         if status == errSecItemNotFound {
             status = SecItemAdd(query.merging(attributes) { _, new in new } as CFDictionary, nil)

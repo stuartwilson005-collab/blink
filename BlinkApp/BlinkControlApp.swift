@@ -1,18 +1,49 @@
 import SwiftUI
+import UIKit
 import BlinkCore
 
 @main
 struct BlinkControlApp: App {
+    @UIApplicationDelegateAdaptor(BlinkAppDelegate.self) private var appDelegate
     var body: some Scene { WindowGroup { DashboardView() } }
 }
 @MainActor
 final class Dashboard: ObservableObject {
+    static let shared = Dashboard()
     @Published var systems: [BlinkSystem] = []
     @Published var updated: Date?
     @Published var error: String?
     @Published var busy = false
     @Published var signedIn = false
     private var api: BlinkAPI?
+    init() { WatchPhoneBridge.shared.start(dashboard: self) }
+    var watchSnapshot: WatchSnapshot {
+        WatchSnapshot(signedIn: signedIn, systems: systems, updated: updated)
+    }
+    func handleWatch(_ command: WatchCommand) async -> WatchReply {
+        guard !busy else {
+            return WatchReply(snapshot: watchSnapshot, error: "An iPhone or Watch request is still running. Refresh shortly.")
+        }
+        do {
+            if api == nil { api = try SessionStore.client(); signedIn = true }
+            guard let api else { throw BlinkError.signedOut }
+            switch command {
+            case .refresh:
+                await perform { try await api.homescreen() }
+            case .setSystem(let id, let armed):
+                await perform {
+                    let screen = try await api.homescreen()
+                    guard let system = screen.systems.first(where: { $0.id == id }) else {
+                        throw WatchControlError.missingSystem
+                    }
+                    return try await api.setSystem(system, armed: armed)
+                }
+            }
+            return WatchReply(snapshot: watchSnapshot, error: error)
+        } catch {
+            return WatchReply(snapshot: watchSnapshot, error: error.localizedDescription)
+        }
+    }
     func restore() async {
         guard !busy else { return }
         do {
@@ -42,7 +73,7 @@ final class Dashboard: ObservableObject {
     }
     private func perform(_ action: () async throws -> Homescreen) async {
         busy = true; error = nil
-        defer { busy = false }
+        defer { busy = false; WatchPhoneBridge.shared.publish(watchSnapshot) }
         do { systems = try await action().systems; updated = Date() }
         catch BlinkError.signedOut { signedIn = false; api = nil; systems = []; updated = nil; error = BlinkError.signedOut.localizedDescription }
         catch { self.error = error.localizedDescription }
@@ -50,11 +81,12 @@ final class Dashboard: ObservableObject {
     func signOut() {
         do {
             try SessionStore.clear(); api = nil; systems = []; updated = nil; signedIn = false; error = nil
+            WatchPhoneBridge.shared.publish(watchSnapshot)
         } catch { self.error = error.localizedDescription }
     }
 }
 struct DashboardView: View {
-    @StateObject private var model = Dashboard()
+    @StateObject private var model = Dashboard.shared
     @Environment(\.scenePhase) private var scenePhase
     @State private var showSignIn = false
     @State private var showHelp = false
@@ -181,5 +213,19 @@ struct DashboardView: View {
                 }.padding()
             }.navigationTitle("iPhone Shortcuts").navigationBarTitleDisplayMode(.inline)
         }.presentationDragIndicator(.visible)
+    }
+}
+
+private enum WatchControlError: LocalizedError {
+    case missingSystem
+    var errorDescription: String? { "This system is no longer available. Refresh your Watch and try again." }
+}
+
+// Activate the companion connection for background launches as well as UI launches.
+final class BlinkAppDelegate: NSObject, UIApplicationDelegate {
+    func application(_ application: UIApplication,
+                     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
+        _ = Dashboard.shared
+        return true
     }
 }
